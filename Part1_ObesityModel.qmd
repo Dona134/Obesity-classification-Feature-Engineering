@@ -1,0 +1,230 @@
+---
+title: "Statistical Learning Project Part 1"
+format: html
+editor: visual
+---
+
+```{r}
+install.packages("reshape2")
+install.packages("corrplot")
+install.packages("fastDummies")
+install.packages("tidymodels")
+```
+
+```{r}
+library(tidyverse)
+library(palmerpenguins)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(tidyr)
+library(corrplot)
+library(fastDummies)
+library(tidymodels)
+library(randomForest)
+library(caret)
+```
+
+### Loading the dataset
+
+```{r}
+data <- read_csv("ObesityData.csv")
+head(data)
+```
+
+### Preprocessing/Feature Engineering 
+
+```{r}
+#Renaming the columns for convenience
+data <- data %>%
+  rename(
+    gender = Gender,
+    age = Age,
+    height = Height,
+    weight = Weight,
+    fam_history = family_history_with_overweight,
+    high_cal = FAVC,
+    veg = FCVC,
+    nmeals = NCP,
+    snacking = CAEC,
+    smoking = SMOKE,
+    water = CH2O,
+    cal_tracking = SCC,
+    phys_act = FAF,
+    tech_use = TUE,
+    alcohol = CALC,
+    transport = MTRANS,
+    obesity_level = NObeyesdad
+  )
+head(data)
+```
+
+```{r}
+# Checking for missing values in the dataset
+colSums(is.na(data))
+```
+
+After the initial stage it was found that the columns "snacking", "smoking", "cal_tracking", "tech_use" do not contribute to the model performance, thus, they are being removed in the beginning.
+
+```{r}
+data <- data[, -c(9,10,12, 14)]
+```
+
+Converting multi-class features ("transportation" and "alcohol") into binary ones.
+
+```{r}
+# Replacing "Public_Transportation" with 1, everything else with 0
+data$transport_auto <- as.integer(data$transport == "Automobile")
+
+data$alcohol_no <- as.integer(data$alcohol == "no")
+data$alcohol_yes <- as.integer(!data$alcohol_no)
+data <- subset(data, select = -c(transport, alcohol, alcohol_no))
+```
+
+```{r}
+#Converting 'obesity_level' and 'snacking' to a factor with the ordered levels
+data$obesity_level <- factor(data$obesity_level, levels = c(
+  'Insufficient_Weight',
+  'Normal_Weight',
+  'Overweight_Level_I',
+  'Overweight_Level_II',
+  'Obesity_Type_I',
+  'Obesity_Type_II',
+  'Obesity_Type_III'
+))
+```
+
+```{r}
+categorical_vars <- c('gender', 'fam_history', 'high_cal','transport_auto' ,'alcohol_yes')
+data[categorical_vars] <- lapply(data[categorical_vars], factor)
+```
+
+### Data exploration and vizualisation
+
+```{r}
+# Selecting only numeric features from the dataset
+numeric_data <- select_if(data, is.numeric)
+for(feature in names(numeric_data)) {
+  print(ggplot(data, aes_string(x = feature)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+    ggtitle(paste("Histogram of", feature)) +
+    theme_minimal())
+}
+```
+
+Note: histograms are usually used for continious variables and the plotting function applies smoothing for categorical variables.
+
+```{r}
+#Plotting binary variables
+for(var in categorical_vars) {
+  print(ggplot(data, aes_string(x = var)) +  
+    geom_bar(fill = "skyblue", color = "black") +
+    ggtitle(paste("Barplot of", var)) +
+    theme_minimal())
+}
+```
+
+```{r}
+#Plotting correlation matrix
+cor_matrix <- cor(numeric_data)
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45,
+         col = colorRampPalette(c("indianred", "white", "skyblue"))(200))
+```
+
+### Adding BMI feature
+
+```{r}
+# Introducing BMI
+data$bmi <- data$weight / (data$height)^2
+```
+
+```{r}
+# Removing the original height and weight columns
+data <- data[, -c(3, 4)]
+```
+
+```{r}
+#integer encoding
+data$obesity_level_encoded <- as.integer(data$obesity_level) 
+```
+
+```{r}
+data_encoded <- dummy_cols(data, select_columns = categorical_vars, remove_first_dummy = TRUE)
+```
+
+```{r}
+data_encoded <- data_encoded[, !(names(data_encoded) %in% categorical_vars)]
+data_encoded <- data_encoded[, !(names(data_encoded) %in% c('obesity_level'))]
+```
+
+```{r}
+head(data_encoded)
+```
+
+```{r}
+# Printing the correlations between the features and the target variable
+correlations <- cor(data_encoded[, -ncol(data_encoded)], data_encoded$obesity_level_encoded)
+print(correlations)
+```
+
+### Feature scaling (standardization)
+
+```{r}
+# Creating a copy of the dataset to keep the original intact
+data_scaled <- data_encoded  
+vars_for_scaling <- c('age', 'bmi', 'veg', 'nmeals', 'water', 'phys_act')
+data_scaled[vars_for_scaling] <- scale(data_scaled[vars_for_scaling])
+```
+
+```{r}
+data_scaled$obesity_level_encoded <- as.factor(data_scaled$obesity_level_encoded)
+```
+
+```{r}
+View(data_scaled)
+```
+
+### Splitting the data into training and testing sets
+
+```{r}
+# Split data into training and testing sets
+set.seed(42)
+data_split <- initial_split(data_scaled, prop = 0.8)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+### Random Forest
+
+```{r}
+# Specifying the control method for cross-validation (e.g., 10-fold CV)
+train_control <- trainControl(method = "cv", number = 10)
+
+# Training the Random Forest model using cross-validation
+rf_model <- train(obesity_level_encoded ~ ., data = train_data,
+                  method = "rf",
+                  ntree = 100,
+                  trControl = train_control,
+                  importance = TRUE)
+# Printing the results
+print(rf_model)
+```
+
+```{r}
+# Predicting on the test set
+predictions <- predict(rf_model, newdata = test_data)
+```
+
+```{r}
+# Creating a confusion matrix
+confusionMatrix(predictions, test_data$obesity_level_encoded)
+```
+
+```{r}
+# Plotting feature importance
+rf <- rf_model$finalModel
+importance <- varImpPlot(rf, type=2, main="Feature Importance")
+
+```
